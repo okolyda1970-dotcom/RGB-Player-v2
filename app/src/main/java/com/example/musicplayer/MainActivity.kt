@@ -52,9 +52,20 @@ class MainActivity : ComponentActivity() {
         }
 
         permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        // Запрос разрешения на уведомления (Android 13+)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
         // ✅ Создаём движок через синглтон + инициализируем MediaSession
         engine = AudioEngine.initInstance(this)
+        // Запускаем сервис, чтобы шторка была готова
+        val serviceIntent = Intent(this, MediaPlaybackService::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
         engine.init()
 
         val savedUri = getSavedFolderUri()
