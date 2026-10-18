@@ -53,7 +53,9 @@ class MainActivity : ComponentActivity() {
 
         permLauncher.launch(Manifest.permission.RECORD_AUDIO)
 
-        engine = AudioEngine(this)
+        // ✅ Создаём движок через синглтон + инициализируем MediaSession
+        engine = AudioEngine.initInstance(this)
+        engine.init()
 
         val savedUri = getSavedFolderUri()
         if (savedUri != null) {
@@ -157,7 +159,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        engine.release()
+        // ⚠️ ВРЕМЕННО закомментировано для теста Bluetooth.
+        // После проверки кнопок — вернём корректную очистку через foreground service.
+        // engine.release()
         super.onDestroy()
     }
 }

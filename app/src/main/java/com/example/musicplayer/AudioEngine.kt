@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.audiofx.Visualizer
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,6 +19,19 @@ import kotlinx.coroutines.launch
 
 class AudioEngine(private val context: Context) {
 
+    companion object {
+        @Volatile
+        private var instance: AudioEngine? = null
+
+        fun getInstance(): AudioEngine? = instance
+
+        fun initInstance(context: Context): AudioEngine {
+            return instance ?: synchronized(this) {
+                instance ?: AudioEngine(context.applicationContext).also { instance = it }
+            }
+        }
+    }
+
     private val _state = MutableStateFlow(PlayerUiState())
     val state = _state.asStateFlow()
 
@@ -29,8 +44,10 @@ class AudioEngine(private val context: Context) {
     private var hideTextJob: Job? = null
     private var progressJob: Job? = null
 
-    // Переменная для защиты от конфликтов при перемотке
     private var isSeeking = false
+
+    var mediaSession: MediaSessionCompat? = null
+        private set
 
     fun setPlaylist(tracks: List<TrackInfo>) {
         playlist = tracks
@@ -39,6 +56,24 @@ class AudioEngine(private val context: Context) {
     }
 
     fun init() {
+        // Создаём MediaSession для Bluetooth-кнопок
+        if (mediaSession == null) {
+            mediaSession = MediaSessionCompat(context, "RGBPlayerSession").apply {
+                setFlags(
+                    MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                            MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+                )
+                setCallback(object : MediaSessionCompat.Callback() {
+                    override fun onPlay() { togglePlay() }
+                    override fun onPause() { togglePlay() }
+                    override fun onSkipToNext() { next() }
+                    override fun onSkipToPrevious() { prev() }
+                    override fun onStop() { player?.pause() }
+                })
+                isActive = true
+            }
+        }
+
         if (playlist.isNotEmpty()) loadCurrent()
     }
 
@@ -46,7 +81,6 @@ class AudioEngine(private val context: Context) {
         if (playlist.isEmpty()) return
         val track = playlist[_state.value.currentIndex]
 
-        // Освобождаем старый плеер и визуализатор
         visualizer?.release()
         visualizer = null
         player?.release()
@@ -78,9 +112,8 @@ class AudioEngine(private val context: Context) {
         }
         player = mp
         setupVisualizer(mp.audioSessionId)
-
-        // Запускаем обновление прогресс-бара
         startProgressUpdates()
+        updatePlaybackState()
     }
 
     private fun setupVisualizer(sessionId: Int) {
@@ -97,7 +130,6 @@ class AudioEngine(private val context: Context) {
                             v: Visualizer?, fft: ByteArray?, rate: Int
                         ) {
                             if (fft == null) return
-                            // fft: пары (re, im), 8-битные, знаковые
                             val n = fft.size / 2
                             val out = FloatArray(n)
                             for (i in 0 until n) {
@@ -109,15 +141,14 @@ class AudioEngine(private val context: Context) {
                         }
                     },
                     Visualizer.getMaxCaptureRate() / 2,
-                    false,   // waveform не нужен
-                    true     // fft нужен
+                    false,
+                    true
                 )
                 enabled = true
             }
         } catch (_: Exception) {}
     }
 
-    // Обновляем таймер каждые 500 мс
     private fun startProgressUpdates() {
         progressJob?.cancel()
         progressJob = scope.launch {
@@ -135,7 +166,6 @@ class AudioEngine(private val context: Context) {
         }
     }
 
-    // Метод для перемотки ползунком
     fun seekTo(positionMs: Int) {
         player?.let { p ->
             val max = p.duration.coerceAtLeast(0)
@@ -145,15 +175,8 @@ class AudioEngine(private val context: Context) {
         }
     }
 
-    // Метод для фиксации конца перемотки (вызывается, когда палец отпускает ползунок)
-    fun onSeekFinished() {
-        isSeeking = false
-    }
-
-    // Метод, когда палец только коснулся ползунка
-    fun onSeekStarted() {
-        isSeeking = true
-    }
+    fun onSeekFinished() { isSeeking = false }
+    fun onSeekStarted() { isSeeking = true }
 
     fun togglePlay() {
         val p = player ?: return
@@ -165,6 +188,7 @@ class AudioEngine(private val context: Context) {
             _state.value = _state.value.copy(isPlaying = true, showText = true)
             scheduleHideText()
         }
+        updatePlaybackState()
     }
 
     fun next() {
@@ -176,6 +200,7 @@ class AudioEngine(private val context: Context) {
         player?.start()
         _state.value = _state.value.copy(isPlaying = true, showText = true)
         scheduleHideText()
+        updatePlaybackState()
     }
 
     fun prev() {
@@ -187,6 +212,7 @@ class AudioEngine(private val context: Context) {
         player?.start()
         _state.value = _state.value.copy(isPlaying = true, showText = true)
         scheduleHideText()
+        updatePlaybackState()
     }
 
     fun playAt(index: Int) {
@@ -199,6 +225,7 @@ class AudioEngine(private val context: Context) {
         loadCurrent()
         player?.start()
         scheduleHideText()
+        updatePlaybackState()
     }
 
     fun toggleMode() {
@@ -222,6 +249,23 @@ class AudioEngine(private val context: Context) {
         }
     }
 
+    private fun updatePlaybackState() {
+        val p = player ?: return
+        val st = if (p.isPlaying) PlaybackStateCompat.STATE_PLAYING
+        else PlaybackStateCompat.STATE_PAUSED
+        val actions = PlaybackStateCompat.ACTION_PLAY or
+                PlaybackStateCompat.ACTION_PAUSE or
+                PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+        mediaSession?.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setActions(actions)
+                .setState(st, p.currentPosition.toLong(), 1.0f)
+                .build()
+        )
+    }
+
     fun fileNameOf(resId: Int): String {
         if (resId == 0) return "—"
         return try {
@@ -236,6 +280,8 @@ class AudioEngine(private val context: Context) {
         progressJob?.cancel()
         visualizer?.release()
         player?.release()
+        mediaSession?.release()
         scope.cancel()
+        // instance = null  // пока не обнуляем, чтобы сервис находил движок
     }
 }

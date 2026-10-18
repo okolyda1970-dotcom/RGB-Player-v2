@@ -50,5 +50,6 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.media:media:1.7.0")
 
 }
