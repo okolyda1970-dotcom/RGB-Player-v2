@@ -8,11 +8,16 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
-import androidx.media.session.MediaButtonReceiver
 import androidx.media.app.NotificationCompat.MediaStyle
+import androidx.media.session.MediaButtonReceiver
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class MediaPlaybackService : Service() {
 
@@ -22,9 +27,12 @@ class MediaPlaybackService : Service() {
     }
 
     private lateinit var engine: AudioEngine
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var stateJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
+
         engine = AudioEngine.getInstance()
             ?: AudioEngine.initInstance(applicationContext).also { it.init() }
 
@@ -32,18 +40,38 @@ class MediaPlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Обработка кнопок от Bluetooth/наушников
-        engine.mediaSession?.let { session ->
-            MediaButtonReceiver.handleIntent(session, intent)
+        // Кнопки от Bluetooth/наушников (если пришли)
+        intent?.let { i ->
+            engine.mediaSession?.let { session ->
+                MediaButtonReceiver.handleIntent(session, i)
+            }
         }
 
-        // Показываем уведомление и переводим сервис в foreground
+        // Обязательно: переводим сервис в foreground
         startForeground(NOTIFICATION_ID, buildNotification())
+
+        // Подписка на состояние движка — обновляем уведомление при любых изменениях
+        if (stateJob == null) {
+            stateJob = serviceScope.launch {
+                engine.state.collect {
+                    val manager = getSystemService(NotificationManager::class.java)
+                    manager.notify(NOTIFICATION_ID, buildNotification())
+                }
+            }
+        }
 
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        stateJob?.cancel()
+        serviceScope.cancel()
+        super.onDestroy()
+    }
+
+    // ==================== УВЕДОМЛЕНИЕ ====================
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -62,10 +90,18 @@ class MediaPlaybackService : Service() {
 
     private fun buildNotification(): Notification {
         val session = engine.mediaSession
-        val track = engine.playlist.getOrNull(engine.state.value.currentIndex)
-        val isPlaying = engine.state.value.isPlaying
+        val state = engine.state.value
+        val track = engine.playlist.getOrNull(state.currentIndex)
 
-        // Интент для открытия приложения по тапу
+        // Заголовок: имя файла/тега или «Нет трека»
+        val title = track?.displayTitle
+            ?: track?.title?.takeIf { it.isNotBlank() }
+            ?: engine.fileNameOf(track?.resId ?: 0).ifBlank { "Нет трека" }
+
+        val subtitle = track?.displayArtist?.takeIf { it.isNotBlank() }
+            ?: "RGB Player"
+
+        // Интент на открытие приложения по тапу
         val contentIntent = packageManager.getLaunchIntentForPackage(packageName)?.let {
             PendingIntent.getActivity(
                 this, 0, it,
@@ -73,44 +109,50 @@ class MediaPlaybackService : Service() {
             )
         }
 
-        // Кнопки управления
-        val playPauseAction = if (isPlaying) {
-            NotificationCompat.Action(
-                android.R.drawable.ic_media_pause, "Пауза",
-                MediaButtonReceiver.buildMediaButtonPendingIntent(
-                    this, PlaybackStateCompat.ACTION_PAUSE
-                )
-            )
-        } else {
-            NotificationCompat.Action(
-                android.R.drawable.ic_media_play, "Играть",
-                MediaButtonReceiver.buildMediaButtonPendingIntent(
-                    this, PlaybackStateCompat.ACTION_PLAY
-                )
-            )
-        }
-
-        val nextAction = NotificationCompat.Action(
-            android.R.drawable.ic_media_next, "Следующий",
-            MediaButtonReceiver.buildMediaButtonPendingIntent(
-                this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-            )
-        )
-
+        // Кнопки
         val prevAction = NotificationCompat.Action(
-            android.R.drawable.ic_media_previous, "Предыдущий",
+            android.R.drawable.ic_media_previous,
+            "Предыдущий",
             MediaButtonReceiver.buildMediaButtonPendingIntent(
                 this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
             )
         )
 
+        val playPauseAction: NotificationCompat.Action =
+            if (state.isPlaying) {
+                NotificationCompat.Action(
+                    android.R.drawable.ic_media_pause,
+                    "Пауза",
+                    MediaButtonReceiver.buildMediaButtonPendingIntent(
+                        this, PlaybackStateCompat.ACTION_PAUSE
+                    )
+                )
+            } else {
+                NotificationCompat.Action(
+                    android.R.drawable.ic_media_play,
+                    "Играть",
+                    MediaButtonReceiver.buildMediaButtonPendingIntent(
+                        this, PlaybackStateCompat.ACTION_PLAY
+                    )
+                )
+            }
+
+        val nextAction = NotificationCompat.Action(
+            android.R.drawable.ic_media_next,
+            "Следующий",
+            MediaButtonReceiver.buildMediaButtonPendingIntent(
+                this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+            )
+        )
+
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_media_play) // замени на свою иконку
-            .setContentTitle(track?.title ?: "Нет трека")
-            .setContentText("RGB Player")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle(title)
+            .setContentText(subtitle)
             .setContentIntent(contentIntent)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(isPlaying)
+            .setOngoing(state.isPlaying)
+            .setOnlyAlertOnce(true)
             .addAction(prevAction)
             .addAction(playPauseAction)
             .addAction(nextAction)
@@ -119,7 +161,7 @@ class MediaPlaybackService : Service() {
             builder.setStyle(
                 MediaStyle()
                     .setMediaSession(session.sessionToken)
-                    .setShowActionsInCompactView(0, 1, 2) // prev, play/pause, next
+                    .setShowActionsInCompactView(0, 1, 2)
             )
         }
 

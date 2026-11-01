@@ -2,7 +2,8 @@ package com.example.musicplayer
 
 import android.net.Uri
 
-enum class VisualMode { BARS, RGB }
+enum class VisualMode { BARS, RGB, OFF }
+
 
 data class TrackInfo(
     val title: String = "",
@@ -23,8 +24,9 @@ data class PlayerUiState(
     val fft: FloatArray = FloatArray(0),
     val showText: Boolean = true,
     val mode: VisualMode = VisualMode.RGB,
+    val currentPosition: Int = 0,
+    val duration: Int = 0,
 
-    // НОВЫЕ ПОЛЯ:
-    val currentPosition: Int = 0, // текущая секунда
-    val duration: Int = 0         // всего секунд
+    // НОВОЕ ПОЛЕ:
+    val isStrobeEnabled: Boolean = true // По умолчанию включен
 )

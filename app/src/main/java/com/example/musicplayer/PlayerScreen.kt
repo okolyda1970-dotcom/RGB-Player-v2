@@ -4,39 +4,22 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.sqrt
@@ -46,7 +29,56 @@ fun PlayerScreen(engine: AudioEngine, onPickFolder: () -> Unit) {
     val state by engine.state.collectAsState()
     val listState = rememberLazyListState()
 
-    // Эффект прокрутки к текущему треку при открытии списка
+    // --- ПЕРЕМЕННЫЕ ДЛЯ СТРОБОСКОПА ---
+    var flashAlpha by remember { mutableStateOf(0f) }
+    var lastStrobeTime by remember { mutableStateOf(0L) }
+    var isStrobing by remember { mutableStateOf(false) }
+
+    // Блокируем стробоскоп на 40 секунд при каждом нажатии Play или смене трека
+    LaunchedEffect(state.isPlaying) {
+        if (state.isPlaying) {
+            lastStrobeTime = System.currentTimeMillis()
+        }
+    }
+
+    // Эффект слежения за громкостью и запуска стробоскопа
+    LaunchedEffect(state.isPlaying, state.fft, state.isStrobeEnabled) {
+        if (!state.isPlaying || state.fft.isEmpty() || !state.isStrobeEnabled) {
+            if (!state.isStrobeEnabled) flashAlpha = 0f
+            return@LaunchedEffect
+        }
+
+        // Считаем громкость по низким частотам (басам)
+        var bassEnergy = 0f
+        val binsToCheck = minOf(10, state.fft.size)
+        for (i in 0 until binsToCheck) {
+            bassEnergy += state.fft[i]
+        }
+        if (binsToCheck > 0) bassEnergy /= binsToCheck
+
+        val now = System.currentTimeMillis()
+
+        if (bassEnergy > 0.35f && (now - lastStrobeTime) > 40000L && !isStrobing) {
+            isStrobing = true
+            lastStrobeTime = now
+        }
+    }
+
+    // Эффект самой анимации мигания
+    LaunchedEffect(isStrobing) {
+        if (isStrobing) {
+            repeat(10) {
+                flashAlpha = 1f
+                delay(40)
+                flashAlpha = 0f
+                delay(60)
+            }
+            isStrobing = false
+        }
+    }
+
+    val showPlaylist = state.showText || state.mode == VisualMode.OFF
+
     LaunchedEffect(state.showText, state.currentIndex) {
         if (state.showText && engine.playlist.isNotEmpty()) {
             val targetIndex = (state.currentIndex - 2).coerceAtLeast(0)
@@ -61,14 +93,14 @@ fun PlayerScreen(engine: AudioEngine, onPickFolder: () -> Unit) {
             .pointerInput(Unit) { detectTapGestures { engine.showText() } }
     ) {
         // Визуализация
-        if (state.mode == VisualMode.RGB) {
-            RgbBands(fft = state.fft, isPlaying = state.isPlaying)
-        } else {
-            BarsVisualizer(fft = state.fft)
+        when (state.mode) {
+            VisualMode.RGB -> RgbBands(fft = state.fft, isPlaying = state.isPlaying)
+            VisualMode.BARS -> BarsVisualizer(fft = state.fft)
+            VisualMode.OFF -> { }
         }
 
-        // ПЛЕЙЛИСТ НА ВЕСЬ ЭКРАН
-        if (state.showText && engine.playlist.isNotEmpty()) {
+        // ПЛЕЙЛИСТ
+        if (showPlaylist && engine.playlist.isNotEmpty()) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -83,17 +115,26 @@ fun PlayerScreen(engine: AudioEngine, onPickFolder: () -> Unit) {
                     val lineText = if (track.displayArtist != null)
                         "$title — ${track.displayArtist}" else title
 
-                    Box(
+                    val prefix = if (active) "▶" else "♪"
+
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
                                 engine.playAt(idx)
                                 engine.showText()
                             }
-                            .padding(vertical = 8.dp)
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "${if (active) "▶ " else "   "}$lineText",
+                            text = prefix,
+                            color = if (active) Color.White else Color.White.copy(alpha = 0.5f),
+                            fontSize = 24.sp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = lineText,
                             color = if (active) Color.White else Color.White.copy(alpha = 0.5f),
                             fontSize = 17.sp
                         )
@@ -102,8 +143,8 @@ fun PlayerScreen(engine: AudioEngine, onPickFolder: () -> Unit) {
             }
         }
 
-        // НИЖНЯЯ ПАНЕЛЬ (ПРОГРЕСС-БАР + КНОПКИ)
-        if (state.showText) {
+        // НИЖНЯЯ ПАНЕЛЬ
+        if (showPlaylist) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -111,28 +152,24 @@ fun PlayerScreen(engine: AudioEngine, onPickFolder: () -> Unit) {
                     .background(Color.Black.copy(alpha = 0.85f))
                     .padding(vertical = 8.dp)
             ) {
-                // --- ПОЛОСА ПРОКРУТКИ ТРЕКА ---
+                // ПОЛОСА ПРОКРУТКИ
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val curStr = formatTime(state.currentPosition)
-                    val durStr = formatTime(state.duration)
-
-                    Text(text = curStr, color = Color.White, fontSize = 11.sp)
+                    Text(text = formatTime(state.currentPosition), color = Color.White, fontSize = 11.sp)
 
                     Slider(
-                        value = if (state.duration > 0) state.currentPosition.toFloat() / state.duration else 0f,
+                        value = if (state.duration in 1..10800) (state.currentPosition.toFloat() / state.duration).coerceIn(0f, 1f) else 0f,
                         onValueChange = { value ->
-                            engine.onSeekStarted()
-                            val targetMs = (value * state.duration).toInt()
-                            engine.seekTo(targetMs)
+                            if (state.duration in 1..10800) {
+                                engine.onSeekStarted()
+                                engine.seekTo((value * state.duration).toInt())
+                            }
                         },
-                        onValueChangeFinished = {
-                            engine.onSeekFinished()
-                        },
+                        onValueChangeFinished = { engine.onSeekFinished() },
                         modifier = Modifier
                             .weight(1f)
                             .padding(horizontal = 8.dp),
@@ -143,84 +180,83 @@ fun PlayerScreen(engine: AudioEngine, onPickFolder: () -> Unit) {
                         )
                     )
 
-                    Text(text = durStr, color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                    Text(text = formatTime(state.duration), color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // КНОПКИ
+                // КНОПКИ (Компактные)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Button(
-                        onClick = { engine.prev() },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.15f),
-                            contentColor = Color.White
-                        ),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-                    ) { Text("⏮", fontSize = 16.sp) }
+                    val smallPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                    val btnColors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White.copy(alpha = 0.15f),
+                        contentColor = Color.White
+                    )
+                    val btnElevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
 
-                    Button(
-                        onClick = { engine.togglePlay() },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.15f),
-                            contentColor = Color.White
-                        ),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-                    ) { Text(if (state.isPlaying) "⏸" else "▶", fontSize = 16.sp) }
+                    Button(onClick = { engine.prev() }, contentPadding = smallPadding, colors = btnColors, elevation = btnElevation) {
+                        Text("⏮", fontSize = 14.sp)
+                    }
 
-                    Button(
-                        onClick = { engine.next() },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.15f),
-                            contentColor = Color.White
-                        ),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-                    ) { Text("⏭", fontSize = 16.sp) }
+                    Button(onClick = { engine.togglePlay() }, contentPadding = smallPadding, colors = btnColors, elevation = btnElevation) {
+                        Text(if (state.isPlaying) "⏸" else "▶", fontSize = 14.sp)
+                    }
 
-                    Button(
-                        onClick = { engine.toggleMode() },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.15f),
-                            contentColor = Color.White
-                        ),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-                    ) {
-                        Text(if (state.mode == VisualMode.RGB) "RGB" else "BARS", fontSize = 11.sp)
+                    Button(onClick = { engine.next() }, contentPadding = smallPadding, colors = btnColors, elevation = btnElevation) {
+                        Text("⏭", fontSize = 14.sp)
+                    }
+
+                    Button(onClick = { engine.toggleMode() }, contentPadding = smallPadding, colors = btnColors, elevation = btnElevation) {
+                        Text(
+                            when (state.mode) {
+                                VisualMode.RGB -> "RGB"
+                                VisualMode.BARS -> "BRS"
+                                VisualMode.OFF -> "---"
+                            },
+                            fontSize = 11.sp
+                        )
                     }
 
                     Button(
-                        onClick = onPickFolder,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        onClick = { engine.toggleStrobe() },
+                        contentPadding = smallPadding,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.15f),
-                            contentColor = Color.White
+                            containerColor = if (state.isStrobeEnabled) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.05f),
+                            contentColor = if (state.isStrobeEnabled) Color.White else Color.White.copy(alpha = 0.3f)
                         ),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-                    ) { Text("Папка", fontSize = 11.sp) }
+                        elevation = btnElevation
+                    ) {
+                        Text("⚡", fontSize = 14.sp)
+                    }
+
+                    Button(onClick = onPickFolder, contentPadding = smallPadding, colors = btnColors, elevation = btnElevation) {
+                        Text("Папка", fontSize = 11.sp)
+                    }
                 }
             }
+        }
+
+        // БЕЛЫЙ СЛОЙ СТРОБОСКОПА
+        if (flashAlpha > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = flashAlpha))
+            )
         }
     }
 }
 
-private fun formatTime(ms: Int): String {
-    val totalSec = ms / 1000
-    val min = totalSec / 60
-    val sec = totalSec % 60
-    return "%d:%02d".format(min, sec)
+private fun formatTime(sec: Int): String {
+    if (sec <= 0) return "0:00"
+    val min = sec / 60
+    val s = sec % 60
+    return "%d:%02d".format(min, s)
 }
-
-// ==========================================
-// ФУНКЦИИ ВИЗУАЛИЗАЦИИ
-// ==========================================
 
 @Composable
 fun RgbBands(fft: FloatArray, isPlaying: Boolean) {
@@ -262,16 +298,27 @@ fun RgbBands(fft: FloatArray, isPlaying: Boolean) {
     gShow = (gAmp * gGain).coerceIn(0f, 1f)
     bShow = (bAmp * bGain).coerceIn(0f, 1f)
 
-    val idle = 0.03f
+    val idle = 0.15f
     val rDraw = if (isPlaying) rShow.coerceAtLeast(idle) else idle
     val gDraw = if (isPlaying) gShow.coerceAtLeast(idle) else idle
     val bDraw = if (isPlaying) bShow.coerceAtLeast(idle) else idle
 
     Canvas(modifier = Modifier.fillMaxSize()) {
-        val h = size.height / 3f
-        drawRect(Color.Red.copy(alpha = rDraw), Offset(0f, 0f), size.copy(height = h))
-        drawRect(Color.Green.copy(alpha = gDraw), Offset(0f, h), size.copy(height = h))
-        drawRect(Color.Blue.copy(alpha = bDraw), Offset(0f, h * 2f), size.copy(height = h))
+        val yellowAlpha = (rDraw + gDraw) / 2f
+        val cyanAlpha = (gDraw + bDraw) / 2f
+
+        val gradient = Brush.verticalGradient(
+            0.00f to Color.Red.copy(alpha = rDraw),
+            0.15f to Color.Red.copy(alpha = rDraw),
+            0.30f to Color.Yellow.copy(alpha = yellowAlpha),
+            0.45f to Color.Green.copy(alpha = gDraw),
+            0.55f to Color.Green.copy(alpha = gDraw),
+            0.70f to Color.Cyan.copy(alpha = cyanAlpha),
+            0.85f to Color.Blue.copy(alpha = bDraw),
+            1.00f to Color.Blue.copy(alpha = bDraw)
+        )
+
+        drawRect(brush = gradient)
     }
 }
 
