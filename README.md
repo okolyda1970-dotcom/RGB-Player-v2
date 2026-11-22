@@ -42,3 +42,13 @@ If you try the app, please let me know what you think.
 ---
 
 Created by okolyda1970-dotcom
+## Screenshots
+
+### Music Player
+![Music Player](Screenshot_2026-11-22-09-33-26-564_com.example.musicplayer.jpg)
+
+### RGB Visualizer
+![RGB Visualizer](Screenshot_2026-11-22-09-33-33-616_com.example.musicplayer.jpg)
+
+### Spectrum Analyzer
+![Spectrum Analyzer](Screenshot_2026-11-22-09-33-40-373_com.example.musicplayer.jpg)
